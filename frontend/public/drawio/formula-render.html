@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Formula Renderer</title>
+<script>
+  window.MathJax = {
+    tex: { packages: ['base', 'ams', 'noerrors', 'noundefined', 'newcommand', 'autoload'] },
+    svg: { font: 'tex', fontCache: 'local' },
+    startup: {
+      typeset: false,
+      pageReady: function() {
+        window.__mathReady = true;
+        MathJax.startup.document.clear();
+      }
+    },
+    loader: {
+      load: ['input/tex', 'output/svg', 'ui/menu']
+    }
+  };
+</script>
+<script src="/drawio/math4/es5/startup.js" id="MathJax-script" async></script>
+<style>
+  body { margin: 0; padding: 0; display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #fff; }
+  #output svg { max-width: 100%; height: auto; }
+  .error { color: #e53e3e; font-family: monospace; font-size: 13px; padding: 16px; }
+</style>
+</head>
+<body>
+<div id="output"></div>
+<script>
+  var readyCheck = setInterval(function() {
+    if (window.__mathReady && typeof MathJax !== 'undefined') {
+      clearInterval(readyCheck);
+      window.parent.postMessage({ type: 'formula-renderer-ready' }, '*');
+    }
+  }, 100);
+
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'render') {
+      var latex = (e.data.latex || '').trim();
+      var id = e.data.id || 0;
+      var out = document.getElementById('output');
+      out.innerHTML = '';
+
+      if (!latex) {
+        e.source.postMessage({ type: 'result', id: id, error: 'empty' }, '*');
+        return;
+      }
+
+      // Clean delimiters
+      latex = latex.replace(/^\\\[|\\\]$/g, '').replace(/^\\\(|\\\)$/g, '').trim();
+
+      try {
+        var svg = MathJax.tex2svg(latex, { display: true, em: 18, ex: 9, containerWidth: 700 });
+        out.appendChild(svg);
+        // Wait for rendering
+        setTimeout(function() {
+          var svgEl = document.querySelector('#output svg');
+          if (svgEl) {
+            var clone = svgEl.cloneNode(true);
+            clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+            var str = new XMLSerializer().serializeToString(clone);
+            e.source.postMessage({ type: 'result', id: id, svg: str }, '*');
+          } else {
+            e.source.postMessage({ type: 'result', id: id, error: 'no svg' }, '*');
+          }
+        }, 200);
+      } catch(ex) {
+        out.innerHTML = '<div class="error">LaTeX Error: ' + ex.message.replace(/</g, '&lt;') + '</div>';
+        e.source.postMessage({ type: 'result', id: id, error: ex.message }, '*');
+      }
+    }
+  });
+</script>
+</body>
+</html>

@@ -556,42 +556,38 @@ window.ICONSEARCH_PATH = null;
     } catch(ex) { return false; }
   }
 
-  /** Render LaTeX to SVG using MathJax and insert as image */
+  /** Render LaTeX to SVG using standalone renderer iframe and insert as image */
   function renderAndInsertLatex(latex) {
-    // Remove any existing display math delimiters
     latex = latex.replace(/^\\\[|\\\]$/g, '').replace(/^\\\(|\\\)$/g, '').trim();
 
-    var container = document.createElement('div');
-    container.style.cssText = 'position:absolute;left:-9999px;top:0;';
-    document.body.appendChild(container);
+    // Create or reuse a hidden formula renderer iframe
+    var rf = document.getElementById('avisio-formula-renderer');
+    if (!rf) {
+      rf = document.createElement('iframe');
+      rf.id = 'avisio-formula-renderer';
+      rf.style.cssText = 'display:none;';
+      rf.src = '/drawio/formula-render.html';
+      document.body.appendChild(rf);
+      // Wait for it to load, then retry
+      setTimeout(function() { renderAndInsertLatex(latex); }, 1000);
+      return;
+    }
 
-    var wrapped = '\\[' + latex + '\\]';
-    container.innerHTML = wrapped;
-
-    function tryInsert() {
-      if (!window.__avisioGraph) {
-        setTimeout(tryInsert, 300);
-        return;
-      }
-      try {
-        MathJax.typesetClear([container]);
-        MathJax.typeset([container]).then(function() {
-          var svg = container.querySelector('svg');
-          if (svg) {
-            var clone = svg.cloneNode(true);
-            clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-            var str = new XMLSerializer().serializeToString(clone);
-            var dataUrl = 'data:image/svg+xml;base64,' +
-              btoa(unescape(encodeURIComponent(str)));
-            insertImageCell(dataUrl);
-          }
-          document.body.removeChild(container);
-        });
-      } catch(ex) {
-        document.body.removeChild(container);
+    var renderId = Date.now();
+    function onMessage(e) {
+      if (e.data && e.data.type === 'result' && e.data.id === renderId) {
+        window.removeEventListener('message', onMessage);
+        if (e.data.svg) {
+          var dataUrl = 'data:image/svg+xml;base64,' +
+            btoa(unescape(encodeURIComponent(e.data.svg)));
+          insertImageCell(dataUrl);
+        }
       }
     }
-    tryInsert();
+    window.addEventListener('message', onMessage);
+    rf.contentWindow.postMessage({ type: 'render', latex: latex, id: renderId }, '*');
+    // Safety timeout
+    setTimeout(function() { window.removeEventListener('message', onMessage); }, 5000);
   }
 
   document.addEventListener('paste', function(e) {
@@ -670,13 +666,18 @@ window.ICONSEARCH_PATH = null;
     var menubar = document.querySelector('.geMenubarContainer .geMenubar');
     if (!menubar) { setTimeout(injectLogo, 500); return; }
     if (menubar.querySelector('.avisio-logo')) return;
+    // Wrap logo in <a> so it matches native .geItem sizing
+    var wrap = document.createElement('a');
+    wrap.className = 'geItem avisio-logo';
+    wrap.style.cssText = 'padding:0 4px;';
+    wrap.href = '/';
     var logo = document.createElement('img');
-    logo.className = 'avisio-logo';
     logo.src = '/logo.png';
     logo.alt = 'Avisio';
-    logo.style.cssText = 'height:20px;width:auto;vertical-align:middle;margin:0 4px 0 4px;cursor:pointer;display:inline-block;';
+    logo.style.cssText = 'height:18px;width:auto;vertical-align:middle;';
+    wrap.appendChild(logo);
     var firstItem = menubar.querySelector('.geItem');
-    menubar.insertBefore(logo, firstItem);
+    menubar.insertBefore(wrap, firstItem);
   }
 
   // Add "公式" button to draw.io menu bar
@@ -687,42 +688,75 @@ window.ICONSEARCH_PATH = null;
     var btn = document.createElement('a');
     btn.className = 'geItem avisio-formula';
     btn.textContent = '公式';
-    btn.style.cssText = 'cursor:pointer;padding:0 8px;display:inline-block;';
-    btn.title = '在线公式编辑器 (Ctrl+Shift+F)';
+    btn.title = '公式 (Ctrl+Shift+F)';
     btn.onclick = function() {
       try { window.parent.postMessage(JSON.stringify({event: 'open-formula'}), '*'); } catch(ex) {}
     };
     menubar.appendChild(btn);
   }
 
-  // Add navigation links to menu bar (首页 / 项目 / 设置)
+  // Add "素材" button to draw.io menu bar (save selected element)
+  function addMaterialButton() {
+    var menubar = document.querySelector('.geMenubarContainer .geMenubar');
+    if (!menubar) { setTimeout(addMaterialButton, 500); return; }
+    if (menubar.querySelector('.geItem.avisio-material')) return;
+    var btn = document.createElement('a');
+    btn.className = 'geItem avisio-material';
+    btn.textContent = '素材';
+    btn.title = '保存选中元素为素材';
+    btn.onclick = function() {
+      try { window.parent.postMessage(JSON.stringify({event: 'avisio-get-selected-ask'}), '*'); } catch(ex) {}
+    };
+    menubar.appendChild(btn);
+  }
+
+  // Add navigation links to menu bar + centered project info
   function addNavLinks() {
     var menubar = document.querySelector('.geMenubarContainer .geMenubar');
     if (!menubar) { setTimeout(addNavLinks, 500); return; }
     if (menubar.querySelector('.avisio-nav-spacer')) return;
 
-    var spacer = document.createElement('span');
-    spacer.className = 'avisio-nav-spacer';
-    spacer.style.cssText = 'flex:1;';
-    menubar.appendChild(spacer);
+    var spacer1 = document.createElement('span');
+    spacer1.className = 'avisio-nav-spacer';
+    spacer1.style.cssText = 'flex:1;';
+    menubar.appendChild(spacer1);
+
+    var infoGroup = document.createElement('span');
+    infoGroup.style.cssText = 'display:flex;align-items:center;gap:0;flex-shrink:0;';
+
+    var info = document.createElement('span');
+    info.className = 'geItem avisio-project-info';
+    info.textContent = '';
+    infoGroup.appendChild(info);
 
     var links = [
       { text: '首页', event: 'nav-home' },
       { text: '我的项目', event: 'nav-projects' },
     ];
-
     links.forEach(function(link) {
       var el = document.createElement('a');
       el.className = 'geItem avisio-nav';
       el.textContent = link.text;
-      el.style.cssText = 'cursor:pointer;padding:0 8px;display:inline-block;opacity:0.65;';
       el.title = link.text;
       el.onclick = function() {
         try { window.parent.postMessage(JSON.stringify({event: link.event}), '*'); } catch(ex) {}
       };
-      menubar.appendChild(el);
+      infoGroup.appendChild(el);
     });
+    menubar.appendChild(infoGroup);
+
+    var spacer2 = document.createElement('span');
+    spacer2.style.cssText = 'flex:1;';
+    menubar.appendChild(spacer2);
   }
+
+  // Listen for project info updates from parent
+  window.addEventListener('message', function(e) {
+    if (e.data && e.data.type === 'avisio-project-info') {
+      var infoEl = document.querySelector('.avisio-project-info');
+      if (infoEl) { infoEl.textContent = e.data.text || ''; }
+    }
+  });
 
   // Inject AI panel to the left of the format container (right sidebar area)
   function injectAIPanel() {
@@ -895,6 +929,7 @@ window.ICONSEARCH_PATH = null;
 
   try { injectLogo(); } catch(ex) {}
   try { addFormulaButton(); } catch(ex) {}
+  try { addMaterialButton(); } catch(ex) {}
   try { addNavLinks(); } catch(ex) {}
   try { injectAIPanel(); } catch(ex) {}
   document.addEventListener('keydown', function(e) {
@@ -939,66 +974,12 @@ window.ICONSEARCH_PATH = null;
     }
   });
 
-  // ... rest of formula rendering code ...
-  // Store rendered formula SVG data URLs by ID
-  var formulaCache = {};
-  var cacheId = 0;
-
-  function initMathConfig() {
-    try {
-      if (window.MathJax && MathJax.config) {
-        MathJax.config.svg = { font: 'tex', fontCache: 'local' };
-      }
-    } catch(ex) {}
-  }
-  initMathConfig();
-
   window.addEventListener('message', function(e) {
-    // --- Render formula ---
-    if (e.data && e.data.type === 'render-formula') {
-      var latex = e.data.latex || '';
-      var renderId = e.data.id;
-
-      latex = latex.replace(/^\\\[|\\\]$/g, '').replace(/^\\\(|\\\)$/g, '').trim();
-      if (!latex) return;
-
-      var container = document.createElement('div');
-      container.style.cssText = 'position:absolute;left:-9999px;top:0;width:800px;';
-      container.innerHTML = '\\[' + latex + '\\]';
-      document.body.appendChild(container);
-
-      try {
-        MathJax.typesetClear([container]);
-        MathJax.typeset([container]);
-        setTimeout(function() {
-          var svg = container.querySelector('svg');
-          if (svg) {
-            var clone = svg.cloneNode(true);
-            clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-            var str = new XMLSerializer().serializeToString(clone);
-            // Store in cache
-            cacheId++;
-            formulaCache[cacheId] = str;
-            e.source.postMessage({ type: 'formula-preview', id: renderId, renderId: cacheId }, '*');
-          } else {
-            e.source.postMessage({ type: 'formula-preview', id: renderId, error: 'no svg' }, '*');
-          }
-          try { document.body.removeChild(container); } catch(ex) {}
-        }, 300);
-      } catch(ex) {
-        e.source.postMessage({ type: 'formula-preview', id: renderId, error: ex.message }, '*');
-        try { document.body.removeChild(container); } catch(ex) {}
-      }
-      return;
-    }
-
-    // --- Insert formula ---
-    if (e.data && e.data.type === 'insert-formula') {
-      var cachedId = e.data.renderId;
-      var svgStr = formulaCache[cachedId];
+    // --- Insert formula SVG (from standalone FormulaModal) ---
+    if (e.data && e.data.type === 'insert-formula-svg') {
+      var svgStr = e.data.svg;
       if (!svgStr) return;
 
-      // Create blob URL for the SVG
       var blob = new Blob([svgStr], { type: 'image/svg+xml' });
       var url = URL.createObjectURL(blob);
 
@@ -1016,20 +997,54 @@ window.ICONSEARCH_PATH = null;
         } catch(ex) {}
       };
 
-      var graph = window.__avisioGraph;
-      if (graph) { doInsert(graph); return; }
-
-      var retries = 0;
-      var timer = setInterval(function() {
-        retries++;
-        if (window.__avisioGraph) {
-          doInsert(window.__avisioGraph);
-          clearInterval(timer);
-        } else if (retries > 30) {
-          clearInterval(timer);
-        }
-      }, 500);
+      var graph = window.__avisioGraph || null;
+      if (graph) { doInsert(graph); }
       return;
+    }
+
+    // --- Save selected cell as material ---
+    if (e.data && e.data.type === 'avisio-get-selected') {
+      var graph = window.__avisioGraph;
+      if (!graph) return;
+      try {
+        var cell = graph.getSelectionCell();
+        if (!cell) {
+          e.source.postMessage({ type: 'avisio-selected', error: 'no selection' }, '*');
+          return;
+        }
+        var encoder = new mxCodec();
+        var node = encoder.encodeCell(cell);
+        var xml = mxUtils.getXml(node);
+        e.source.postMessage({ type: 'avisio-selected', xml: xml, name: cell.value || 'Shape' }, '*');
+      } catch(ex) {
+        e.source.postMessage({ type: 'avisio-selected', error: ex.message }, '*');
+      }
+    }
+
+    // --- Insert material cell ---
+    if (e.data && e.data.type === 'avisio-insert-material') {
+      var graph = window.__avisioGraph;
+      if (!graph || !e.data.xml) return;
+      try {
+        var doc = new DOMParser().parseFromString(e.data.xml, 'text/xml');
+        var cellNode = doc.documentElement;
+        var decoder = new mxCodec(doc);
+        var cell = decoder.decodeCell(cellNode);
+        if (cell) {
+          var sc = graph.view.scale || 1;
+          var tr = graph.view.translate || { x: 0, y: 0 };
+          var cx = graph.container.offsetWidth / 2 / sc - tr.x;
+          var cy = graph.container.offsetHeight / 2 / sc - tr.y;
+          var geo = cell.geometry;
+          if (geo) {
+            geo.x = cx - (geo.width || 100) / 2;
+            geo.y = cy - (geo.height || 60) / 2;
+          }
+          graph.model.beginUpdate();
+          try { graph.addCell(cell); graph.setSelectionCell(cell); }
+          finally { graph.model.endUpdate(); }
+        }
+      } catch(ex) {}
     }
   });
 })();
